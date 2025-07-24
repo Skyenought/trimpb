@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package project.v1.user;
+
+option go_package = "example/projectv1/user";
+
+
+message User {
+  string user_id = 1;
+  string display_name = 2;
+}
+
+
+message PersonalInfo {
+  string email = 1;
+  string phone_number = 2;
+}

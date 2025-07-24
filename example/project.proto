@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package project.v1;
+
+import "common.proto";
+import "domain/user.proto";
+
+option go_package = "example/projectv1";
+
+message Project {
+  string project_id = 1;
+  string name = 2;
+  Status status = 3;
+  user.User owner = 4;
+}
+
+message UnrelatedMessage {
+  string data = 1;
+}
+
+service ProjectService {
+  // 我们关心的服务
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  // 其他不相关的服务
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+
+  rpc GetProjectDetails(user.PersonalInfo) returns (DeleteProjectRequest);
+}
+
+message CreateProjectRequest {
+  string name = 1;
+  string owner_user_id = 2;
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message DeleteProjectRequest {
+  string project_id = 1;
+}
+message DeleteProjectResponse {
+  bool success = 1;
+}
