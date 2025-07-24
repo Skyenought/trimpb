@@ -110,7 +110,7 @@ message DeleteProjectResponse {
 		fmt.Println(content)
 	}
 	fmt.Println("Notice how only Project, Status, User, and the Create* messages are kept.")
-	fmt.Println("=================================================================\n")
+	fmt.Println("=================================================================")
 
 	// =================================================================
 	//  Example 2: Using trimpb.TrimMulti (Multiple Entry Points & Methods)
