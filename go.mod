@@ -1,6 +1,6 @@
 module github.com/Skyenought/trimpb
 
-go 1.21.0
+go 1.21
 
 require (
 	github.com/jhump/protoreflect v1.17.0
