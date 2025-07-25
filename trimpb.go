@@ -45,11 +45,12 @@ func Trim(entryProtoFile string, methodNames []string, protoContents map[string]
 
 // TrimMulti parses a set of in-memory proto files from multiple entry points, identifies the specified RPC methods
 // and their transitive dependencies, and returns new in-memory proto files containing only the necessary definitions.
+// This function operates purely on in-memory data and is ideal for testing and decoupled environments.
 //
 // Parameters:
 //   - entryProtoFiles: A slice of paths to the main .proto files to begin trimming from.
 //   - methodNames: A slice of RPC method names to keep.
-//   - protoContents: A map where keys are proto file paths and values are the string contents of those files.
+//   - protoContents: A map where keys are proto file paths (relative to a virtual root) and values are the string contents of those files.
 //
 // Returns:
 //   - A map where keys are the original file paths and values are the new, trimmed string contents of those files.
@@ -60,16 +61,81 @@ func TrimMulti(entryProtoFiles []string, methodNames []string, protoContents map
 		filesToParse = append(filesToParse, path)
 	}
 
-	// 2. Parse all provided .proto files from memory.
+	// 2. Parse all provided .proto files from memory using an Accessor.
 	parser := protoparse.Parser{
 		Accessor:              protoparse.FileContentsFromMap(protoContents),
 		IncludeSourceCodeInfo: true,
 	}
 
+	// When parsing from a map, ParseFiles *does* return all descriptors, because we pass all file names.
 	fds, err := parser.ParseFiles(filesToParse...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse proto files: %w", err)
+		return nil, fmt.Errorf("failed to parse proto files from map: %w", err)
 	}
+
+	return runTrim(entryProtoFiles, methodNames, fds)
+}
+
+// TrimWithImportPaths trims proto files by directly using file system paths, similar to how `protoc -I` works.
+// This function is useful for command-line tools and scenarios where direct file system access is preferred.
+//
+// Parameters:
+//   - entryProtoFiles: A slice of paths to the main .proto files, relative to one of the importPaths.
+//   - methodNames: A slice of RPC method names to keep.
+//   - importPaths: A slice of directories to search for .proto files (like protoc's -I flag).
+//
+// Returns:
+//   - A map where keys are the original file paths and values are the new, trimmed string contents of those files.
+func TrimWithImportPaths(entryProtoFiles []string, methodNames []string, importPaths []string) (map[string]string, error) {
+	// 1. Parse proto files by letting the parser read directly from the file system.
+	parser := protoparse.Parser{
+		ImportPaths:           importPaths,
+		IncludeSourceCodeInfo: true,
+	}
+
+	// THIS IS THE KEY: ParseFiles only returns descriptors for the files explicitly listed.
+	entryFds, err := parser.ParseFiles(entryProtoFiles...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse proto files from import paths %v: %w", importPaths, err)
+	}
+
+	// file descriptors that the parser loaded.
+	allFds := collectAllDependencies(entryFds)
+
+	// The rest of the logic is the same, but now it operates on the complete set of files.
+	return runTrim(entryProtoFiles, methodNames, allFds)
+}
+
+// collectAllDependencies performs a breadth-first search to gather all transitive
+// file dependencies from a given set of entry-point file descriptors.
+func collectAllDependencies(entryFds []*desc.FileDescriptor) []*desc.FileDescriptor {
+	allFdsMap := make(map[string]*desc.FileDescriptor)
+	queue := make([]*desc.FileDescriptor, len(entryFds))
+	copy(queue, entryFds)
+
+	for len(queue) > 0 {
+		fd := queue[0]
+		queue = queue[1:]
+
+		if _, visited := allFdsMap[fd.GetName()]; visited {
+			continue
+		}
+		allFdsMap[fd.GetName()] = fd
+
+		for _, dep := range fd.GetDependencies() {
+			queue = append(queue, dep)
+		}
+	}
+
+	result := make([]*desc.FileDescriptor, 0, len(allFdsMap))
+	for _, fd := range allFdsMap {
+		result = append(result, fd)
+	}
+	return result
+}
+
+// runTrim contains the core trimming logic, shared by both TrimMulti and TrimWithImportPaths.
+func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDescriptor) (map[string]string, error) {
 	fmt.Printf("Successfully parsed %d file(s) (including dependencies).\n", len(fds))
 
 	// 3. Find file descriptors for all entry point files.
