@@ -29,56 +29,15 @@ func newTrimmer() *trimmer {
 	}
 }
 
-//// Trim is a convenience wrapper around TrimMulti.
-//func Trim(entryProtoFile string, methodNames []string, protoContents map[string]string) (map[string]string, error) {
-//	return TrimMulti([]string{entryProtoFile}, methodNames, protoContents)
-//}
-
 // TrimMulti operates purely on in-memory data, using a map of file paths to their contents.
 // It does not access the file system.
 func TrimMulti(entryProtoFiles []string, methodNames []string, importPaths []string, protoContents map[string]string) (map[string]string, error) {
-	//if len(protoContents) == 0 {
-	//	return nil, fmt.Errorf("protoContents map cannot be empty")
-	//}
-	//
-	//// --- 自动修复逻辑开始 ---
-	//allPaths := make([]string, 0, len(protoContents))
-	//for path := range protoContents {
-	//	allPaths = append(allPaths, path)
-	//}
-	//
-	//// 1. 找到所有文件路径的最长公共前缀作为虚拟的 "import root"
-	//commonRoot := findLongestCommonPrefixPath(allPaths)
-	//if commonRoot != "" {
-	//	// 确保公共根路径以分隔符结尾，以便正确地 TrimPrefix
-	//	commonRoot += string(filepath.Separator)
-	//	fmt.Printf("Auto-detected common import root: %s\n", commonRoot)
-	//}
-	//
-	//// 2. 重映射 protoContents 的 keys 和 entryProtoFiles 的路径
-	//remappedProtoContents := make(map[string]string, len(protoContents))
-	//for path, content := range protoContents {
-	//	newKey := strings.TrimPrefix(path, commonRoot)
-	//	remappedProtoContents[newKey] = content
-	//}
-	//
-	//remappedEntryFiles := make([]string, 0, len(entryProtoFiles))
-	//for _, entry := range entryProtoFiles {
-	//	newEntry := strings.TrimPrefix(entry, commonRoot)
-	//	remappedEntryFiles = append(remappedEntryFiles, newEntry)
-	//}
-	//// --- 自动修复逻辑结束 ---
-
 	parser := protoparse.Parser{
-		// 使用重映射后的 map 作为 accessor
 		Accessor:              protoparse.FileContentsFromMap(protoContents),
 		IncludeSourceCodeInfo: true,
 		ImportPaths:           importPaths,
 	}
 
-	fmt.Printf("Attempting to parse remapped entry files from memory: %v\n", protoContents)
-
-	// 使用重映射后的入口文件列表进行解析
 	entryFds, err := parser.ParseFiles(entryProtoFiles...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse proto files from map: %w", err)
@@ -86,23 +45,23 @@ func TrimMulti(entryProtoFiles []string, methodNames []string, importPaths []str
 
 	allFds := collectAllDependencies(entryFds)
 
-	// 【重要】: 调用 runTrim 时，我们仍然使用原始的 entryProtoFiles 列表。
-	// 这是为了确保最终返回给用户的 map 的 key 是他们最初提供的、完整的路径，符合用户预期。
 	trimmedResults, err := runTrim(entryProtoFiles, methodNames, allFds)
 	if err != nil {
 		return nil, err
 	}
 
-	// 由于 runTrim 内部创建的 descriptor 会使用相对路径，我们需要将结果的 key 再次映射回原始的完整路径。
 	finalResults := make(map[string]string)
 	for trimmedPath, content := range trimmedResults {
-		originalPath := trimmedPath
-		// 检查原始路径是否存在，以防万一
-		if _, ok := protoContents[originalPath]; ok {
-			finalResults[originalPath] = content
-		} else {
-			// 作为一个回退，如果找不到原始路径，就使用裁剪后的路径
-			// 这种情况理论上不应该发生
+		found := false
+		for originalPath := range protoContents {
+			if strings.HasSuffix(originalPath, trimmedPath) {
+				finalResults[originalPath] = content
+				found = true
+				break
+			}
+		}
+
+		if !found {
 			finalResults[trimmedPath] = content
 		}
 	}
@@ -137,14 +96,12 @@ func collectAllDependencies(entryFds []*desc.FileDescriptor) []*desc.FileDescrip
 }
 
 func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDescriptor) (map[string]string, error) {
-	fmt.Printf("Successfully parsed %d file(s) (including dependencies).\n", len(fds))
-
 	entryFileMap := make(map[string]*desc.FileDescriptor)
 	for _, entryPath := range entryProtoFiles {
 		var found bool
 		for _, fd := range fds {
-			if fd.GetName() == entryPath {
-				entryFileMap[entryPath] = fd
+			if strings.HasSuffix(fd.GetName(), entryPath) {
+				entryFileMap[fd.GetName()] = fd
 				found = true
 				break
 			}
@@ -160,17 +117,22 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 
 	t := newTrimmer()
 
-	fmt.Printf("Searching for %d entry point method(s)...\n", len(methodNames))
-	for _, methodName := range methodNames {
-		md, err := findMethod(methodName, entryFileDescs, fds)
-		if err != nil {
-			return nil, err
+	if len(methodNames) == 0 {
+		for _, fd := range entryFileDescs {
+			for _, service := range fd.GetServices() {
+				t.entryPointMethods = append(t.entryPointMethods, service.GetMethods()...)
+			}
 		}
-		fmt.Printf("  - Found method '%s' in file '%s'\n", md.GetFullyQualifiedName(), md.GetFile().GetName())
-		t.entryPointMethods = append(t.entryPointMethods, md)
+	} else {
+		for _, methodName := range methodNames {
+			md, err := findMethod(methodName, entryFileDescs, fds)
+			if err != nil {
+				return nil, err
+			}
+			t.entryPointMethods = append(t.entryPointMethods, md)
+		}
 	}
 
-	fmt.Println("Collecting dependencies...")
 	for _, method := range t.entryPointMethods {
 		t.collectDependencies(method.GetInputType())
 		t.collectDependencies(method.GetOutputType())
