@@ -2,6 +2,7 @@ package trimpb
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/jhump/protoreflect/desc"
@@ -28,86 +29,85 @@ func newTrimmer() *trimmer {
 	}
 }
 
-// Trim parses a set of in-memory proto files from a single entry point, identifies the specified RPC methods
-// and their transitive dependencies, and returns new in-memory proto files containing only the necessary definitions.
-// It is a convenience wrapper around TrimMulti.
-//
-// Parameters:
-//   - entryProtoFile: The path to the main .proto file to begin trimming from.
-//   - methodNames: A slice of RPC method names to keep.
-//   - protoContents: A map where keys are proto file paths and values are the string contents of those files.
-//
-// Returns:
-//   - A map where keys are the original file paths and values are the new, trimmed string contents of those files.
+// Trim is a convenience wrapper around TrimMulti.
 func Trim(entryProtoFile string, methodNames []string, protoContents map[string]string) (map[string]string, error) {
 	return TrimMulti([]string{entryProtoFile}, methodNames, protoContents)
 }
 
-// TrimMulti parses a set of in-memory proto files from multiple entry points, identifies the specified RPC methods
-// and their transitive dependencies, and returns new in-memory proto files containing only the necessary definitions.
-// This function operates purely on in-memory data and is ideal for testing and decoupled environments.
-//
-// Parameters:
-//   - entryProtoFiles: A slice of paths to the main .proto files to begin trimming from.
-//   - methodNames: A slice of RPC method names to keep.
-//   - protoContents: A map where keys are proto file paths (relative to a virtual root) and values are the string contents of those files.
-//
-// Returns:
-//   - A map where keys are the original file paths and values are the new, trimmed string contents of those files.
+// TrimMulti operates purely on in-memory data, using a map of file paths to their contents.
+// It does not access the file system.
 func TrimMulti(entryProtoFiles []string, methodNames []string, protoContents map[string]string) (map[string]string, error) {
-	// 1. Prepare list of files to parse from the map keys.
-	filesToParse := make([]string, 0, len(protoContents))
-	for path := range protoContents {
-		filesToParse = append(filesToParse, path)
+	if len(protoContents) == 0 {
+		return nil, fmt.Errorf("protoContents map cannot be empty")
 	}
 
-	// 2. Parse all provided .proto files from memory using an Accessor.
+	// --- 自动修复逻辑开始 ---
+	allPaths := make([]string, 0, len(protoContents))
+	for path := range protoContents {
+		allPaths = append(allPaths, path)
+	}
+
+	// 1. 找到所有文件路径的最长公共前缀作为虚拟的 "import root"
+	commonRoot := findLongestCommonPrefixPath(allPaths)
+	if commonRoot != "" {
+		// 确保公共根路径以分隔符结尾，以便正确地 TrimPrefix
+		commonRoot += string(filepath.Separator)
+		fmt.Printf("Auto-detected common import root: %s\n", commonRoot)
+	}
+
+	// 2. 重映射 protoContents 的 keys 和 entryProtoFiles 的路径
+	remappedProtoContents := make(map[string]string, len(protoContents))
+	for path, content := range protoContents {
+		newKey := strings.TrimPrefix(path, commonRoot)
+		remappedProtoContents[newKey] = content
+	}
+
+	remappedEntryFiles := make([]string, 0, len(entryProtoFiles))
+	for _, entry := range entryProtoFiles {
+		newEntry := strings.TrimPrefix(entry, commonRoot)
+		remappedEntryFiles = append(remappedEntryFiles, newEntry)
+	}
+	// --- 自动修复逻辑结束 ---
+
 	parser := protoparse.Parser{
-		Accessor:              protoparse.FileContentsFromMap(protoContents),
+		// 使用重映射后的 map 作为 accessor
+		Accessor:              protoparse.FileContentsFromMap(remappedProtoContents),
 		IncludeSourceCodeInfo: true,
 	}
 
-	// When parsing from a map, ParseFiles *does* return all descriptors, because we pass all file names.
-	fds, err := parser.ParseFiles(filesToParse...)
+	fmt.Printf("Attempting to parse remapped entry files from memory: %v\n", remappedEntryFiles)
+
+	// 使用重映射后的入口文件列表进行解析
+	entryFds, err := parser.ParseFiles(remappedEntryFiles...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse proto files from map: %w", err)
 	}
 
-	return runTrim(entryProtoFiles, methodNames, fds)
-}
-
-// TrimWithImportPaths trims proto files by directly using file system paths, similar to how `protoc -I` works.
-// This function is useful for command-line tools and scenarios where direct file system access is preferred.
-//
-// Parameters:
-//   - entryProtoFiles: A slice of paths to the main .proto files, relative to one of the importPaths.
-//   - methodNames: A slice of RPC method names to keep.
-//   - importPaths: A slice of directories to search for .proto files (like protoc's -I flag).
-//
-// Returns:
-//   - A map where keys are the original file paths and values are the new, trimmed string contents of those files.
-func TrimWithImportPaths(entryProtoFiles []string, methodNames []string, importPaths []string) (map[string]string, error) {
-	// 1. Parse proto files by letting the parser read directly from the file system.
-	parser := protoparse.Parser{
-		ImportPaths:           importPaths,
-		IncludeSourceCodeInfo: true,
-	}
-
-	// THIS IS THE KEY: ParseFiles only returns descriptors for the files explicitly listed.
-	entryFds, err := parser.ParseFiles(entryProtoFiles...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse proto files from import paths %v: %w", importPaths, err)
-	}
-
-	// file descriptors that the parser loaded.
 	allFds := collectAllDependencies(entryFds)
 
-	// The rest of the logic is the same, but now it operates on the complete set of files.
-	return runTrim(entryProtoFiles, methodNames, allFds)
-}
+	// 【重要】: 调用 runTrim 时，我们仍然使用原始的 entryProtoFiles 列表。
+	// 这是为了确保最终返回给用户的 map 的 key 是他们最初提供的、完整的路径，符合用户预期。
+	trimmedResults, err := runTrim(entryProtoFiles, methodNames, allFds)
+	if err != nil {
+		return nil, err
+	}
 
-// collectAllDependencies performs a breadth-first search to gather all transitive
-// file dependencies from a given set of entry-point file descriptors.
+	// 由于 runTrim 内部创建的 descriptor 会使用相对路径，我们需要将结果的 key 再次映射回原始的完整路径。
+	finalResults := make(map[string]string)
+	for trimmedPath, content := range trimmedResults {
+		originalPath := commonRoot + trimmedPath
+		// 检查原始路径是否存在，以防万一
+		if _, ok := protoContents[originalPath]; ok {
+			finalResults[originalPath] = content
+		} else {
+			// 作为一个回退，如果找不到原始路径，就使用裁剪后的路径
+			// 这种情况理论上不应该发生
+			finalResults[trimmedPath] = content
+		}
+	}
+
+	return finalResults, nil
+}
 func collectAllDependencies(entryFds []*desc.FileDescriptor) []*desc.FileDescriptor {
 	allFdsMap := make(map[string]*desc.FileDescriptor)
 	queue := make([]*desc.FileDescriptor, len(entryFds))
@@ -134,11 +134,9 @@ func collectAllDependencies(entryFds []*desc.FileDescriptor) []*desc.FileDescrip
 	return result
 }
 
-// runTrim contains the core trimming logic, shared by both TrimMulti and TrimWithImportPaths.
 func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDescriptor) (map[string]string, error) {
 	fmt.Printf("Successfully parsed %d file(s) (including dependencies).\n", len(fds))
 
-	// 3. Find file descriptors for all entry point files.
 	entryFileMap := make(map[string]*desc.FileDescriptor)
 	for _, entryPath := range entryProtoFiles {
 		var found bool
@@ -160,7 +158,6 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 
 	t := newTrimmer()
 
-	// 4. Find all specified entry point methods.
 	fmt.Printf("Searching for %d entry point method(s)...\n", len(methodNames))
 	for _, methodName := range methodNames {
 		md, err := findMethod(methodName, entryFileDescs, fds)
@@ -171,14 +168,12 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 		t.entryPointMethods = append(t.entryPointMethods, md)
 	}
 
-	// 5. Recursively collect all dependencies for all entry point methods.
 	fmt.Println("Collecting dependencies...")
 	for _, method := range t.entryPointMethods {
 		t.collectDependencies(method.GetInputType())
 		t.collectDependencies(method.GetOutputType())
 	}
 
-	// 6. Determine which files are affected (contain required definitions).
 	for _, fd := range fds {
 		if t.isFileRequired(fd) {
 			t.filesToTrim[fd.GetName()] = fd
@@ -186,7 +181,6 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 	}
 	fmt.Printf("Found %d files containing required definitions.\n", len(t.filesToTrim))
 
-	// 7. Filter each required file descriptor to create a new, trimmed version.
 	var filteredFileProtos []*descriptorpb.FileDescriptorProto
 	for _, originalFd := range t.filesToTrim {
 		newProto := t.filterFileDescriptor(originalFd)
@@ -199,7 +193,6 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 		return nil, fmt.Errorf("failed to create new descriptors from filtered set: %w", err)
 	}
 
-	// 8. Print the new, trimmed .proto files to a map of strings.
 	p := &protoprint.Printer{}
 	result := make(map[string]string)
 	for path, newFd := range newFds {
@@ -214,12 +207,8 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 	return result, nil
 }
 
-// findMethod finds a method descriptor. It intelligently distinguishes
-// between short names (Service.Method) and fully-qualified names (pkg.Service.Method).
 func findMethod(methodName string, entryFiles []*desc.FileDescriptor, allFiles []*desc.FileDescriptor) (*desc.MethodDescriptor, error) {
 	dotCount := strings.Count(methodName, ".")
-
-	// Case 1: Assumed fully-qualified name, e.g., "package.v1.Service.Method" (dotCount >= 2)
 	if dotCount >= 2 {
 		for _, fd := range allFiles {
 			if d := fd.FindSymbol(methodName); d != nil {
@@ -228,10 +217,9 @@ func findMethod(methodName string, entryFiles []*desc.FileDescriptor, allFiles [
 				}
 			}
 		}
-	} else if dotCount == 1 { // Case 2: Assumed short name, e.g., "Service.Method", search in all entry files
+	} else if dotCount == 1 {
 		parts := strings.Split(methodName, ".")
 		serviceName, simpleMethodName := parts[0], parts[1]
-
 		for _, entryFile := range entryFiles {
 			for _, service := range entryFile.GetServices() {
 				if service.GetName() == serviceName {
@@ -241,18 +229,15 @@ func findMethod(methodName string, entryFiles []*desc.FileDescriptor, allFiles [
 				}
 			}
 		}
-	} else { // Case 3: Invalid format
+	} else {
 		return nil, fmt.Errorf("invalid method name format: '%s'. Expected 'Service.Method' or 'package.Service.Method'", methodName)
 	}
-
-	// If all attempts fail
 	return nil, fmt.Errorf("method '%s' not found in any of the provided entry files or their imports", methodName)
 }
 
-// collectDependencies recursively finds all message and enum types required by a message.
 func (t *trimmer) collectDependencies(md *desc.MessageDescriptor) {
 	if _, ok := t.requiredMessages[md.Unwrap().FullName()]; ok {
-		return // Already processed
+		return
 	}
 	t.requiredMessages[md.Unwrap().FullName()] = struct{}{}
 	for _, field := range md.GetFields() {
@@ -265,21 +250,17 @@ func (t *trimmer) collectDependencies(md *desc.MessageDescriptor) {
 	}
 }
 
-// isFileRequired checks if a file descriptor contains any definitions that we need to keep.
 func (t *trimmer) isFileRequired(fd *desc.FileDescriptor) bool {
-	// Check if this file contains one of our entry point methods.
 	for _, m := range t.entryPointMethods {
 		if fd.GetFile().GetName() == m.GetFile().GetName() {
 			return true
 		}
 	}
-	// Check if it contains any required messages.
 	for _, mtd := range fd.GetMessageTypes() {
 		if _, ok := t.requiredMessages[mtd.Unwrap().FullName()]; ok {
 			return true
 		}
 	}
-	// Check if it contains any required enums.
 	for _, etd := range fd.GetEnumTypes() {
 		if _, ok := t.requiredEnums[etd.Unwrap().FullName()]; ok {
 			return true
@@ -288,10 +269,9 @@ func (t *trimmer) isFileRequired(fd *desc.FileDescriptor) bool {
 	return false
 }
 
-// filterFileDescriptor creates a new, trimmed file descriptor proto from an original one.
 func (t *trimmer) filterFileDescriptor(originalFd *desc.FileDescriptor) *descriptorpb.FileDescriptorProto {
 	newProto := &descriptorpb.FileDescriptorProto{
-		Name:    stringPtr(originalFd.GetName()), // Keep original name
+		Name:    stringPtr(originalFd.GetName()),
 		Package: stringPtr(originalFd.GetPackage()),
 		Options: originalFd.GetFileOptions(),
 	}
@@ -302,28 +282,24 @@ func (t *trimmer) filterFileDescriptor(originalFd *desc.FileDescriptor) *descrip
 		newProto.Syntax = stringPtr("proto2")
 	}
 
-	// Keep only dependencies that are also being trimmed.
 	for _, dep := range originalFd.GetDependencies() {
 		if _, ok := t.filesToTrim[dep.GetName()]; ok {
 			newProto.Dependency = append(newProto.Dependency, dep.GetName())
 		}
 	}
 
-	// Keep only the required message types.
 	for _, msg := range originalFd.GetMessageTypes() {
 		if _, ok := t.requiredMessages[msg.Unwrap().FullName()]; ok {
 			newProto.MessageType = append(newProto.MessageType, msg.AsDescriptorProto())
 		}
 	}
 
-	// Keep only the required enum types.
 	for _, enum := range originalFd.GetEnumTypes() {
 		if _, ok := t.requiredEnums[enum.Unwrap().FullName()]; ok {
 			newProto.EnumType = append(newProto.EnumType, enum.AsEnumDescriptorProto())
 		}
 	}
 
-	// Group required methods by service for the current file.
 	methodsByService := make(map[protoreflect.FullName][]*desc.MethodDescriptor)
 	for _, method := range t.entryPointMethods {
 		if method.GetFile().GetName() == originalFd.GetName() {
@@ -333,7 +309,6 @@ func (t *trimmer) filterFileDescriptor(originalFd *desc.FileDescriptor) *descrip
 		}
 	}
 
-	// Reconstruct services with only the required methods.
 	for _, svc := range originalFd.GetServices() {
 		if methods, ok := methodsByService[svc.Unwrap().FullName()]; ok {
 			newSvcProto := &descriptorpb.ServiceDescriptorProto{
@@ -348,6 +323,49 @@ func (t *trimmer) filterFileDescriptor(originalFd *desc.FileDescriptor) *descrip
 	}
 
 	return newProto
+}
+
+// findLongestCommonPrefixPath 找到一组路径的最长公共目录前缀。
+// 例如：["a/b/c", "a/b/d"] -> "a/b"
+func findLongestCommonPrefixPath(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	if len(paths) == 1 {
+		return filepath.Dir(paths[0])
+	}
+
+	// 按路径分隔符分割所有路径
+	parts := make([][]string, len(paths))
+	for i, path := range paths {
+		parts[i] = strings.Split(path, string(filepath.Separator))
+	}
+
+	minLen := len(parts[0])
+	for _, p := range parts {
+		if len(p) < minLen {
+			minLen = len(p)
+		}
+	}
+
+	var commonPrefix []string
+	for i := 0; i < minLen; i++ {
+		firstPart := parts[0][i]
+		allMatch := true
+		for j := 1; j < len(parts); j++ {
+			if parts[j][i] != firstPart {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			commonPrefix = append(commonPrefix, firstPart)
+		} else {
+			break
+		}
+	}
+
+	return strings.Join(commonPrefix, string(filepath.Separator))
 }
 
 func stringPtr(s string) *string {
