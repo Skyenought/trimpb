@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package api.v1;
+
+import "common/types/base.proto";
+
+option go_package = "example.com/api/v1";
+
+message GetRequest {
+  common.types.UUID id = 1;
+}
+
+message ListRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ErrorResponse {
+  int32 code = 1;
+  string message = 2;
+}

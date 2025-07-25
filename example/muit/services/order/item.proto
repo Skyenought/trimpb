@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package services.order;
+
+import "common/types/money.proto";
+import "services/product/product.proto";
+
+option go_package = "example.com/services/order";
+
+message OrderItem {
+  services.product.Product product_snapshot = 1; // 下单时的商品快照
+  int32 quantity = 2;
+  common.types.Money price_per_unit = 3; // 下单时的单价
+}

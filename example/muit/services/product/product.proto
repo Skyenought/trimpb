@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package services.product;
+
+import "common/types/base.proto";
+import "common/types/money.proto";
+import "services/user/user.proto";
+
+option go_package = "example.com/services/product";
+
+message Product {
+  common.types.UUID product_id = 1;
+  string name = 2;
+  string description = 3;
+  common.types.Money price = 4;
+  common.types.UUID seller_id = 5; // 引用 User 的 ID
+  int32 stock_quantity = 6;
+  common.types.Status status = 7;
+}

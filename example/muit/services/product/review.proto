@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package services.product;
+
+import "common/types/base.proto";
+import "services/user/user.proto";
+import "services/product/product.proto";
+
+option go_package = "example.com/services/product";
+
+message Review {
+  common.types.UUID review_id = 1;
+  common.types.UUID product_id = 2; // 评论的商品
+  common.types.UUID user_id = 3;    // 发表评论的用户
+  int32 rating = 4; // e.g., 1-5
+  string comment = 5;
+  int64 submitted_at_unix_milli = 6;
+}

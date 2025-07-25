@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package services.order;
+
+import "common/types/base.proto";
+import "common/types/money.proto";
+import "services/user/user.proto";
+import "services/order/item.proto";
+
+option go_package = "example.com/services/order";
+
+message Order {
+  common.types.UUID order_id = 1;
+  common.types.UUID buyer_id = 2;
+  repeated OrderItem items = 3;
+  common.types.Money total_amount = 4;
+  common.types.Status order_status = 5;
+  string shipping_address = 6;
+  int64 placed_at_unix_milli = 7;
+}

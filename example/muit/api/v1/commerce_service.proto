@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package api.v1;
+
+// 添加正确的 import
+import "services/user/user.proto";
+import "api/v1/common_messages.proto";
+import "services/product/product.proto";
+import "services/order/order.proto";
+
+
+option go_package = "example.com/api/v1";
+
+// 这是一个将所有功能聚合在一起的顶层服务
+service CommerceService {
+  // User RPCs
+  rpc GetUser(GetRequest) returns (services.user.User);
+  rpc CreateUser(services.user.User) returns (services.order.Order);
+
+  // Product RPCs
+  rpc GetProduct(GetRequest) returns (services.product.Product);
+  rpc ListProducts(ListRequest) returns (ListProductsResponse);
+
+  // Order RPCs
+  rpc GetOrder(GetRequest) returns (services.order.Order);
+  rpc PlaceOrder(services.order.Order) returns (services.order.Order);
+}
+
+service TestService {
+  // 测试用的服务
+  rpc TestMethod(GetRequest) returns (services.user.User);
+  rpc TestMethod2(services.product.Product) returns (services.product.Product);
+  rpc TestMethod3(services.order.Order) returns (services.order.Order);
+}
+
+message ListProductsResponse {
+  repeated services.product.Product products = 1;
+  string next_page_token = 2;
+}

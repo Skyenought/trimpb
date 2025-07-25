@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package common.types;
+
+option go_package = "example.com/common/types";
+
+// 表示金额
+message Money {
+  // ISO 4217 货币代码, e.g., "CNY", "USD"
+  string currency_code = 1;
+  // 整数部分
+  int64 units = 2;
+  // 小数部分，例如 units=1, nanos=250000000 表示 1.25
+  int32 nanos = 3;
+}

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package services.user;
+
+import "common/types/base.proto";
+
+option go_package = "example.com/services/user";
+
+message UserProfile {
+  common.types.UUID profile_id = 1;
+  string bio = 2;
+  string avatar_url = 3;
+  map<string, string> social_links = 4;
+}

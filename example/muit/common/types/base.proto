@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package common.types;
+
+option go_package = "example.com/common/types";
+
+// 通用唯一标识符
+message UUID {
+  string value = 1;
+}
+
+// 通用状态枚举
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_INACTIVE = 2;
+  STATUS_PENDING = 3;
+}
