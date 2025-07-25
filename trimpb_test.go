@@ -3,15 +3,14 @@ package trimpb
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"log"
-	"os"
-	"testing"
-
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/desc/protoparse"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
+	"log"
+	"os"
+	"testing"
 )
 
 func Test_UsageExample(t *testing.T) {
@@ -297,6 +296,87 @@ service BillingService {
 		assert.NotNil(t, commonFd.FindMessage("common.v1.User"), "User is a dependency of Invoice and should be kept")
 		assert.Nil(t, commonFd.FindEnum("common.v1.Status"), "Status is not a dependency of the kept methods and should be trimmed")
 	})
+}
+
+func Test_TrimMulti_MultiServiceSingleFile(t *testing.T) {
+	// --- Test Fixtures: Load protos from the user's `example/muit` directory ---
+	searchRoot := "example/muit"
+	if _, err := os.Stat(searchRoot); os.IsNotExist(err) {
+		t.Fatalf("Test directory %s not found. Make sure you run tests from the project root.", searchRoot)
+	}
+
+	protoContents, err := LoadProtos([]string{searchRoot})
+	require.NoError(t, err)
+	require.NotEmpty(t, protoContents)
+
+	entryFile := "api/v1/commerce_service.proto"
+	methodsToKeep := []string{
+		"CommerceService.CreateUser",
+		"TestService.TestMethod",
+	}
+
+	// --- Execution ---
+	var trimmedFiles map[string]string
+	_ = captureOutput(t, func() {
+		trimmedFiles, err = TrimMulti([]string{entryFile}, methodsToKeep, protoContents)
+	})
+
+	// --- Assertions ---
+	require.NoError(t, err)
+
+	// 新的依赖分析:
+	// CreateUser -> User, Order
+	// TestMethod -> GetRequest, User
+	// ---
+	// 依赖 User -> user.proto, profile.proto, base.proto
+	// 依赖 Order -> order.proto, item.proto, money.proto, base.proto, user.proto
+	// 依赖 item.proto -> product.proto
+	// 依赖 GetRequest -> common_messages.proto, base.proto
+	// 合并后的文件列表 (9个):
+	// commerce_service.proto, user.proto, profile.proto, order.proto, item.proto,
+	// product.proto, common_messages.proto, base.proto, money.proto
+	require.Len(t, trimmedFiles, 9, "Should keep all files related to User, Order, and GetRequest")
+	assert.Contains(t, trimmedFiles, "api/v1/commerce_service.proto")
+	assert.Contains(t, trimmedFiles, "services/user/user.proto")
+	assert.Contains(t, trimmedFiles, "services/order/order.proto")
+	assert.Contains(t, trimmedFiles, "services/product/product.proto")
+	assert.Contains(t, trimmedFiles, "api/v1/common_messages.proto")
+	assert.NotContains(t, trimmedFiles, "services/product/review.proto", "Review message is not a dependency and should be trimmed")
+
+	// --- Deeper check of the trimmed content ---
+	parser := protoparse.Parser{Accessor: protoparse.FileContentsFromMap(trimmedFiles)}
+	fds, err := parser.ParseFiles(entryFile)
+	require.NoError(t, err, "Trimmed files should be valid and parsable")
+
+	var entryFd *desc.FileDescriptor
+	for _, fd := range fds {
+		if fd.GetName() == entryFile {
+			entryFd = fd
+			break
+		}
+	}
+	require.NotNil(t, entryFd, "Entry file descriptor not found in parsed results")
+
+	// =================================================================
+	//  关键修复：检查更新后的方法签名
+	// =================================================================
+	commerceSvc := entryFd.FindService("api.v1.CommerceService")
+	require.NotNil(t, commerceSvc)
+	createUserMethod := commerceSvc.FindMethodByName("CreateUser")
+	require.NotNil(t, createUserMethod)
+
+	// 验证 CreateUser 的输入和输出类型
+	assert.Equal(t, "services.user.User", createUserMethod.GetInputType().GetFullyQualifiedName(), "Input for CreateUser should be User")
+	assert.Equal(t, "services.order.Order", createUserMethod.GetOutputType().GetFullyQualifiedName(), "Output for CreateUser should now be Order")
+
+	testSvc := entryFd.FindService("api.v1.TestService")
+	require.NotNil(t, testSvc)
+	testMethod := testSvc.FindMethodByName("TestMethod")
+	require.NotNil(t, testMethod)
+
+	// 验证 TestMethod 的输入和输出类型
+	assert.Equal(t, "api.v1.GetRequest", testMethod.GetInputType().GetFullyQualifiedName(), "Input for TestMethod should now be GetRequest")
+	assert.Equal(t, "services.user.User", testMethod.GetOutputType().GetFullyQualifiedName(), "Output for TestMethod should be User")
 }
 
 // captureOutput temporarily redirects stdout to a buffer to keep test logs clean.

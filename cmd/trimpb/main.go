@@ -59,7 +59,7 @@ func main() {
 	}
 
 	// 1. Find and read all proto files into memory.
-	protoContents, err := loadProtos(sourceRoots)
+	protoContents, err := trimpb.LoadProtos(sourceRoots)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading proto files: %v\n", err)
 		os.Exit(1)
@@ -112,51 +112,4 @@ func main() {
 			os.Exit(1)
 		}
 	}
-}
-
-// loadProtos finds all proto files in the given source roots, reads them, and returns
-// a map of their relative path to their content.
-func loadProtos(sourceRoots []string) (map[string]string, error) {
-	protoContents := make(map[string]string)
-
-	// Ensure roots are absolute for consistent processing
-	absRoots := make([]string, len(sourceRoots))
-	for i, root := range sourceRoots {
-		abs, err := filepath.Abs(root)
-		if err != nil {
-			return nil, fmt.Errorf("could not get absolute path for source root '%s': %w", root, err)
-		}
-		absRoots[i] = abs
-	}
-
-	for _, root := range absRoots {
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if !info.IsDir() && strings.HasSuffix(info.Name(), ".proto") {
-				// Get path relative to the current root to use as a map key
-				relPath, err := filepath.Rel(root, path)
-				if err != nil {
-					return fmt.Errorf("could not get relative path for %s: %w", path, err)
-				}
-
-				// Avoid adding duplicates if roots overlap
-				if _, exists := protoContents[relPath]; exists {
-					return nil
-				}
-
-				content, err := os.ReadFile(path)
-				if err != nil {
-					return fmt.Errorf("could not read file %s: %w", path, err)
-				}
-				protoContents[relPath] = string(content)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, fmt.Errorf("error walking path %s: %w", root, err)
-		}
-	}
-	return protoContents, nil
 }
