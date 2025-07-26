@@ -1,5 +1,3 @@
-### `readme.md` (更新后)
-
 # TrimPB: Protobuf 裁剪与清理工具
 
 ### 核心功能
