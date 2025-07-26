@@ -2,7 +2,6 @@ package trimpb
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/jhump/protoreflect/desc"
@@ -12,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// trimmer manages the state of the dependency collection process.
+// trimmer 管理依赖收集过程的状态。
 type trimmer struct {
 	requiredMessages  map[protoreflect.FullName]struct{}
 	requiredEnums     map[protoreflect.FullName]struct{}
@@ -20,7 +19,7 @@ type trimmer struct {
 	filesToTrim       map[string]*desc.FileDescriptor
 }
 
-// newTrimmer creates a new instance of a trimmer.
+// newTrimmer 创建一个新的 trimmer 实例。
 func newTrimmer() *trimmer {
 	return &trimmer{
 		requiredMessages: make(map[protoreflect.FullName]struct{}),
@@ -29,8 +28,8 @@ func newTrimmer() *trimmer {
 	}
 }
 
-// TrimMulti operates purely on in-memory data, using a map of file paths to their contents.
-// It does not access the file system.
+// TrimMulti 完全在内存中操作，使用文件路径到其内容的映射。
+// 它不访问文件系统。
 func TrimMulti(entryProtoFiles []string, methodNames []string, importPaths []string, protoContents map[string]string) (map[string]string, error) {
 	parser := protoparse.Parser{
 		Accessor:              protoparse.FileContentsFromMap(protoContents),
@@ -125,17 +124,25 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 		}
 	} else {
 		for _, methodName := range methodNames {
-			md, err := findMethod(methodName, entryFileDescs, fds)
+			// 调用 findMethods (复数形式) 来获取所有匹配的方法
+			methods, err := findMethods(methodName, entryFileDescs, fds)
 			if err != nil {
 				return nil, err
 			}
-			t.entryPointMethods = append(t.entryPointMethods, md)
+			// 将返回的方法切片追加到入口点方法列表中
+			t.entryPointMethods = append(t.entryPointMethods, methods...)
 		}
 	}
 
 	for _, method := range t.entryPointMethods {
 		t.collectDependencies(method.GetInputType())
 		t.collectDependencies(method.GetOutputType())
+	}
+
+	// 如果没有找到任何入口方法，可能意味着模糊搜索没有结果，此时直接返回，避免后续处理出错
+	if len(t.entryPointMethods) == 0 && len(methodNames) > 0 {
+		fmt.Println("Warning: No methods matched the given names, no files will be trimmed.")
+		return make(map[string]string), nil
 	}
 
 	for _, fd := range fds {
@@ -171,16 +178,21 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 	return result, nil
 }
 
-func findMethod(methodName string, entryFiles []*desc.FileDescriptor, allFiles []*desc.FileDescriptor) (*desc.MethodDescriptor, error) {
+// --- 主要修改区域 ---
+// 将 findMethod 重命名为 findMethods，并修改其逻辑以支持模糊匹配和返回多个结果。
+func findMethods(methodName string, entryFiles []*desc.FileDescriptor, allFiles []*desc.FileDescriptor) ([]*desc.MethodDescriptor, error) {
 	dotCount := strings.Count(methodName, ".")
+
+	// 1. 完全限定名匹配 (package.Service.Method)
 	if dotCount >= 2 {
 		for _, fd := range allFiles {
 			if d := fd.FindSymbol(methodName); d != nil {
 				if md, ok := d.(*desc.MethodDescriptor); ok {
-					return md, nil
+					return []*desc.MethodDescriptor{md}, nil // 返回包含单个元素的切片
 				}
 			}
 		}
+		// 2. 服务名.方法名 匹配 (Service.Method)
 	} else if dotCount == 1 {
 		parts := strings.Split(methodName, ".")
 		serviceName, simpleMethodName := parts[0], parts[1]
@@ -188,15 +200,36 @@ func findMethod(methodName string, entryFiles []*desc.FileDescriptor, allFiles [
 			for _, service := range entryFile.GetServices() {
 				if service.GetName() == serviceName {
 					if method := service.FindMethodByName(simpleMethodName); method != nil {
-						return method, nil
+						return []*desc.MethodDescriptor{method}, nil // 返回包含单个元素的切片
 					}
 				}
 			}
 		}
+		// 3. 新增：模糊方法名匹配 (Method)
 	} else {
-		return nil, fmt.Errorf("invalid method name format: '%s'. Expected 'Service.Method' or 'package.Service.Method'", methodName)
+		var foundMethods []*desc.MethodDescriptor
+		// 遍历所有入口文件
+		for _, entryFile := range entryFiles {
+			// 遍历文件中的所有服务
+			for _, service := range entryFile.GetServices() {
+				// 遍历服务中的所有方法
+				for _, method := range service.GetMethods() {
+					// 使用 strings.Contains 实现模糊匹配
+					if strings.Contains(method.GetName(), methodName) {
+						foundMethods = append(foundMethods, method)
+					}
+				}
+			}
+		}
+		// 如果找到了任何匹配的方法，则返回它们
+		if len(foundMethods) > 0 {
+			fmt.Printf("Found %d methods matching '%s'\n", len(foundMethods), methodName)
+			return foundMethods, nil
+		}
 	}
-	return nil, fmt.Errorf("method '%s' not found in any of the provided entry files or their imports", methodName)
+
+	// 如果所有方式都找不到，则返回错误
+	return nil, fmt.Errorf("method matching '%s' not found in any of the provided entry files or their imports", methodName)
 }
 
 func (t *trimmer) collectDependencies(md *desc.MessageDescriptor) {
@@ -287,49 +320,6 @@ func (t *trimmer) filterFileDescriptor(originalFd *desc.FileDescriptor) *descrip
 	}
 
 	return newProto
-}
-
-// findLongestCommonPrefixPath 找到一组路径的最长公共目录前缀。
-// 例如：["a/b/c", "a/b/d"] -> "a/b"
-func findLongestCommonPrefixPath(paths []string) string {
-	if len(paths) == 0 {
-		return ""
-	}
-	if len(paths) == 1 {
-		return filepath.Dir(paths[0])
-	}
-
-	// 按路径分隔符分割所有路径
-	parts := make([][]string, len(paths))
-	for i, path := range paths {
-		parts[i] = strings.Split(path, string(filepath.Separator))
-	}
-
-	minLen := len(parts[0])
-	for _, p := range parts {
-		if len(p) < minLen {
-			minLen = len(p)
-		}
-	}
-
-	var commonPrefix []string
-	for i := 0; i < minLen; i++ {
-		firstPart := parts[0][i]
-		allMatch := true
-		for j := 1; j < len(parts); j++ {
-			if parts[j][i] != firstPart {
-				allMatch = false
-				break
-			}
-		}
-		if allMatch {
-			commonPrefix = append(commonPrefix, firstPart)
-		} else {
-			break
-		}
-	}
-
-	return strings.Join(commonPrefix, string(filepath.Separator))
 }
 
 func stringPtr(s string) *string {

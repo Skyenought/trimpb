@@ -93,7 +93,7 @@ func TestTrimMulti(t *testing.T) {
 		{
 			name:            "简单项目裁剪 - CreateProject",
 			entryProtoFiles: []string{"project.proto"},
-			methodNames:     []string{"ProjectService.CreateProject"},
+			methodNames:     []string{"CreateProject"},
 			importPaths:     []string{"example"},
 			protoContents: loadProtoFiles(t, "example",
 				"project.proto",

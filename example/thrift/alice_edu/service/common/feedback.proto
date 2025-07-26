@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package common;
+
+message Feedback {
+  string feedback_id = 1;
+  string content = 2;
+}
+
+message UnusedMessage {
+  int32 id = 1;
+}
+

@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package turing.qs;
+
+// This import relies on a common root directory ('.../service')
+// to find the 'common' sibling directory.
+import "common/feedback.proto";
+
+message GetQuestionSearchFeedbackRequest {
+  string question_id = 1;
+}
+
+message GetQuestionSearchFeedbackResponse {
+  common.Feedback feedback = 1;
+}
+
+service QuestionSearchService {
+  rpc GetQuestionSearchFeedback(GetQuestionSearchFeedbackRequest) returns (GetQuestionSearchFeedbackResponse);
+}
