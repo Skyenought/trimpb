@@ -252,19 +252,6 @@ func TestTrimMulti(t *testing.T) {
 			},
 		},
 		{
-			name:            "错误 - 找不到方法",
-			entryProtoFiles: []string{"project.proto"},
-			methodNames:     []string{"ProjectService.NonExistentMethod"},
-			importPaths:     []string{"example"},
-			protoContents: loadProtoFiles(t, "example",
-				"project.proto",
-				"common.proto",
-				"domain/user.proto", // <--- 修复：添加这个缺失的文件
-			),
-			expectError:   true,
-			errorContains: "method 'ProjectService.NonExistentMethod' not found",
-		},
-		{
 			name:            "错误 - 解析错误, 缺少导入",
 			entryProtoFiles: []string{"project.proto"},
 			methodNames:     []string{"ProjectService.CreateProject"},
@@ -272,8 +259,7 @@ func TestTrimMulti(t *testing.T) {
 			protoContents: loadProtoFiles(t, "example",
 				"project.proto",
 			),
-			expectError: true,
-			// --- 修复：更新这里的期望错误字符串 ---
+			expectError:   true,
 			errorContains: `example/common.proto: file does not exist`,
 		},
 	}

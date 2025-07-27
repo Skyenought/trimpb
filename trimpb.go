@@ -2,6 +2,7 @@ package trimpb
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/jhump/protoreflect/desc"
@@ -44,25 +45,17 @@ func TrimMulti(entryProtoFiles []string, methodNames []string, importPaths []str
 
 	allFds := collectAllDependencies(entryFds)
 
-	trimmedResults, err := runTrim(entryProtoFiles, methodNames, allFds)
+	// 修改点1: 将解析后的 entryFds 直接传递给 runTrim
+	trimmedResults, err := runTrim(entryFds, methodNames, allFds)
 	if err != nil {
 		return nil, err
 	}
 
 	finalResults := make(map[string]string)
 	for trimmedPath, content := range trimmedResults {
-		found := false
-		for originalPath := range protoContents {
-			if strings.HasSuffix(originalPath, trimmedPath) {
-				finalResults[originalPath] = content
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			finalResults[trimmedPath] = content
-		}
+		// findRealPath 用于将输出路径（trimmer 内部使用的 FD Name）映射回可能的原始输入路径或其在 protoContents 中的完整路径。
+		realPath := findRealPath(trimmedPath, importPaths, protoContents)
+		finalResults[realPath] = content
 	}
 
 	return finalResults, nil
@@ -94,24 +87,10 @@ func collectAllDependencies(entryFds []*desc.FileDescriptor) []*desc.FileDescrip
 	return result
 }
 
-func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDescriptor) (map[string]string, error) {
-	entryFileMap := make(map[string]*desc.FileDescriptor)
-	for _, entryPath := range entryProtoFiles {
-		var found bool
-		for _, fd := range fds {
-			if strings.HasSuffix(fd.GetName(), entryPath) {
-				entryFileMap[fd.GetName()] = fd
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("entry proto file '%s' not found in parsed files", entryPath)
-		}
-	}
-	entryFileDescs := make([]*desc.FileDescriptor, 0, len(entryFileMap))
-	for _, fd := range entryFileMap {
-		entryFileDescs = append(entryFileDescs, fd)
+// 修改点2: runTrim 的签名现在接受 []*desc.FileDescriptor 作为 entryFileDescs
+func runTrim(entryFileDescs []*desc.FileDescriptor, methodNames []string, fds []*desc.FileDescriptor) (map[string]string, error) {
+	if len(entryFileDescs) == 0 {
+		return nil, fmt.Errorf("no entry proto files were parsed successfully")
 	}
 
 	t := newTrimmer()
@@ -124,12 +103,10 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 		}
 	} else {
 		for _, methodName := range methodNames {
-			// 调用 findMethods (复数形式) 来获取所有匹配的方法
 			methods, err := findMethods(methodName, entryFileDescs, fds)
 			if err != nil {
 				return nil, err
 			}
-			// 将返回的方法切片追加到入口点方法列表中
 			t.entryPointMethods = append(t.entryPointMethods, methods...)
 		}
 	}
@@ -139,7 +116,6 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 		t.collectDependencies(method.GetOutputType())
 	}
 
-	// 如果没有找到任何入口方法，可能意味着模糊搜索没有结果，此时直接返回，避免后续处理出错
 	if len(t.entryPointMethods) == 0 && len(methodNames) > 0 {
 		fmt.Println("Warning: No methods matched the given names, no files will be trimmed.")
 		return make(map[string]string), nil
@@ -178,8 +154,6 @@ func runTrim(entryProtoFiles []string, methodNames []string, fds []*desc.FileDes
 	return result, nil
 }
 
-// --- 主要修改区域 ---
-// 将 findMethod 重命名为 findMethods，并修改其逻辑以支持模糊匹配和返回多个结果。
 func findMethods(methodName string, entryFiles []*desc.FileDescriptor, allFiles []*desc.FileDescriptor) ([]*desc.MethodDescriptor, error) {
 	dotCount := strings.Count(methodName, ".")
 
@@ -188,7 +162,7 @@ func findMethods(methodName string, entryFiles []*desc.FileDescriptor, allFiles 
 		for _, fd := range allFiles {
 			if d := fd.FindSymbol(methodName); d != nil {
 				if md, ok := d.(*desc.MethodDescriptor); ok {
-					return []*desc.MethodDescriptor{md}, nil // 返回包含单个元素的切片
+					return []*desc.MethodDescriptor{md}, nil
 				}
 			}
 		}
@@ -200,35 +174,29 @@ func findMethods(methodName string, entryFiles []*desc.FileDescriptor, allFiles 
 			for _, service := range entryFile.GetServices() {
 				if service.GetName() == serviceName {
 					if method := service.FindMethodByName(simpleMethodName); method != nil {
-						return []*desc.MethodDescriptor{method}, nil // 返回包含单个元素的切片
+						return []*desc.MethodDescriptor{method}, nil
 					}
 				}
 			}
 		}
-		// 3. 新增：模糊方法名匹配 (Method)
+		// 3. 模糊方法名匹配 (Method)
 	} else {
 		var foundMethods []*desc.MethodDescriptor
-		// 遍历所有入口文件
 		for _, entryFile := range entryFiles {
-			// 遍历文件中的所有服务
 			for _, service := range entryFile.GetServices() {
-				// 遍历服务中的所有方法
 				for _, method := range service.GetMethods() {
-					// 使用 strings.Contains 实现模糊匹配
 					if strings.Contains(method.GetName(), methodName) {
 						foundMethods = append(foundMethods, method)
 					}
 				}
 			}
 		}
-		// 如果找到了任何匹配的方法，则返回它们
 		if len(foundMethods) > 0 {
 			fmt.Printf("Found %d methods matching '%s'\n", len(foundMethods), methodName)
 			return foundMethods, nil
 		}
 	}
 
-	// 如果所有方式都找不到，则返回错误
 	return nil, fmt.Errorf("method matching '%s' not found in any of the provided entry files or their imports", methodName)
 }
 
@@ -320,6 +288,19 @@ func (t *trimmer) filterFileDescriptor(originalFd *desc.FileDescriptor) *descrip
 	}
 
 	return newProto
+}
+
+func findRealPath(path string, importPaths []string, protoContents map[string]string) string {
+	for _, importPath := range importPaths {
+		joinedPath := filepath.Clean(filepath.Join(importPath, path))
+		if _, ok := protoContents[joinedPath]; ok {
+			return joinedPath
+		}
+	}
+	if _, ok := protoContents[path]; ok {
+		return path
+	}
+	return path
 }
 
 func stringPtr(s string) *string {
