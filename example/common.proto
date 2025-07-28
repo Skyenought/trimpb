@@ -4,6 +4,10 @@ package project.v1;
 
 option go_package = "example/projectv1";
 
+// =============== test ===============
+
+
+// 引入其他不相关的消息
 enum Status {
   STATUS_UNSPECIFIED = 0;
   ACTIVE = 1;

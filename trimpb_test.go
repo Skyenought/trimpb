@@ -10,20 +10,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// loadProtoFiles 读取一组相对于根目录的 protobuf 文件，
-// 并返回一个从它们的完整路径到其内容的映射。
-// 这模拟了从项目根加载文件的过程。
 func loadProtoFiles(t *testing.T, rootDir string, relativeFiles ...string) map[string]string {
 	t.Helper()
 	contents := make(map[string]string)
 	for _, relPath := range relativeFiles {
-		// map 的 key 是从项目角度出发的完整路径
 		fullPath := filepath.Join(rootDir, relPath)
 		bytes, err := os.ReadFile(fullPath)
 		require.NoError(t, err, "未能读取测试 proto 文件: %s", fullPath)
 		contents[fullPath] = string(bytes)
 	}
 	return contents
+}
+
+func Test_TrimMulti_WithComment(t *testing.T) {
+	protoFiles := loadProtoFiles(t, "example",
+		"project.proto",
+		"common.proto",
+		"domain/user.proto",
+	)
+	multi, err := TrimMulti([]string{"project.proto"}, []string{"ProjectService.CreateProject"}, []string{"example"}, protoFiles)
+	require.NoError(t, err)
+	assert.Contains(t, multi["example/common.proto"], "// =============== test ===============")
+	assert.Contains(t, multi["example/common.proto"], "// 引入其他不相关的消息")
 }
 
 func TestTrimMulti(t *testing.T) {
